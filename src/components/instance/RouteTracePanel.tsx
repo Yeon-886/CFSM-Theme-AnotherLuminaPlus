@@ -4,8 +4,9 @@ import { Link } from "react-router-dom";
 import { Route } from "lucide-react";
 import { InstancePanel, InstanceChartLoadingBody } from "@/components/instance/InstancePanel";
 import { RangeSelector } from "@/components/instance/RangeSelector";
+import { RunRouteMeasurement } from "@/components/instance/RunRouteMeasurement";
 import { locale, t } from "@/i18n";
-import { fetchRouteTraceSnapshot, getNodeRouteTraces, type RouteTrace } from "@/services/routeTraces";
+import { fetchRouteTraceSnapshot, getNodeRouteOptions, type RouteTraceOption } from "@/services/routeTraces";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const IP_FAMILIES = [{ value: 4, label: "IPv4" }, { value: 6, label: "IPv6" }];
@@ -16,30 +17,35 @@ const STATUS_LABELS = {
   failed: "本次测量失败",
 } as const;
 
-function probeMethod(trace: RouteTrace) {
+function probeMethod(trace: RouteTraceOption) {
   const protocol = trace.protocol.toUpperCase();
   return trace.port === undefined ? protocol : `${protocol}/${trace.port}`;
 }
 
-function TraceHops({ trace }: { trace: RouteTrace }) {
-  const measuredAt = new Date(trace.measuredAt);
+function TraceHops({ option }: { option: RouteTraceOption }) {
+  const trace = option.trace;
+  const measuredAt = trace ? new Date(trace.measuredAt) : null;
   return (
     <div className="surface-inset min-w-0 p-3 sm:p-4">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[13px]">
         <strong className="min-w-0 wrap-break-word text-(--text-primary)">
-          {trace.source} → {trace.destination}
+          {option.source} → {option.destination}
         </strong>
-        <code className="break-all text-(--text-secondary)">{trace.targetIp}</code>
-        <span className="text-(--text-secondary)">{probeMethod(trace)}</span>
+        <code className="break-all text-(--text-secondary)">{option.targetIp}</code>
+        <span className="text-(--text-secondary)">{probeMethod(option)}</span>
       </div>
-      <p className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[12px] text-(--text-secondary)">
-        <time dateTime={trace.measuredAt} title={trace.measuredAt}>
-          {t("测量时间")} {measuredAt.toLocaleString(locale(), { dateStyle: "medium", timeStyle: "short" })}
-        </time>
-        <span>{t(STATUS_LABELS[trace.status])}</span>
-        {Date.now() - measuredAt.getTime() > DAY_MS && <span>{t("记录已超过 24 小时")}</span>}
-      </p>
-      {trace.hops.length > 0 && (
+      {trace && measuredAt ? (
+        <p className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[12px] text-(--text-secondary)">
+          <time dateTime={trace.measuredAt} title={trace.measuredAt}>
+            {t("测量时间")} {measuredAt.toLocaleString(locale(), { dateStyle: "medium", timeStyle: "short" })}
+          </time>
+          <span>{t(STATUS_LABELS[trace.status])}</span>
+          {Date.now() - measuredAt.getTime() > DAY_MS && <span>{t("记录已超过 24 小时")}</span>}
+        </p>
+      ) : (
+        <p className="mt-1 text-[12px] text-(--text-secondary)">{t("此线路尚未执行测量。")}</p>
+      )}
+      {trace && trace.hops.length > 0 && (
         <div className="mt-3 overflow-x-auto" tabIndex={0} role="region" aria-label={t("逐跳路由")}>
           <table className="w-full min-w-[420px] text-left text-[12px]">
             <thead className="text-(--text-secondary)">
@@ -73,8 +79,8 @@ function TraceHops({ trace }: { trace: RouteTrace }) {
   );
 }
 
-function RouteTraceResults({ nodeId, urls }: { nodeId: string; urls: string[] }) {
-  const [pickedDirection, setDirection] = useState<RouteTrace["direction"] | null>(null);
+function RouteTraceResults({ nodeId, urls, canMeasure }: { nodeId: string; urls: string[]; canMeasure: boolean }) {
+  const [pickedDirection, setDirection] = useState<RouteTraceOption["direction"] | null>(null);
   const [pickedFamily, setFamily] = useState<number | null>(null);
   const [pickedTrace, setTrace] = useState("");
   const feeds = useQueries({
@@ -88,8 +94,8 @@ function RouteTraceResults({ nodeId, urls }: { nodeId: string; urls: string[] })
       retry: false,
     })),
   });
-  const snapshots = feeds.flatMap((feed) => feed.data ? [feed.data] : []);
-  const traces = getNodeRouteTraces(snapshots, nodeId);
+  const snapshots = feeds.flatMap((feed, index) => feed.data ? [{ snapshot: feed.data, snapshotUrl: urls[index] }] : []);
+  const traces = getNodeRouteOptions(snapshots, nodeId);
   const hasPending = feeds.some((feed) => feed.isPending);
   const isFetching = feeds.some((feed) => feed.isFetching);
   const hasError = feeds.some((feed) => feed.isError);
@@ -159,7 +165,17 @@ function RouteTraceResults({ nodeId, urls }: { nodeId: string; urls: string[] })
               </select>
             </label>
           )}
-          <TraceHops trace={selected} />
+          {canMeasure && (selected.probe ? (
+            <RunRouteMeasurement
+              key={`${selected.probe.snapshotUrl}#${selected.probe.targetId}`}
+              probe={selected.probe}
+            />
+          ) : (
+            <p className="text-[13px] text-(--text-secondary)">
+              {t("这条线路使用只读快照。接入探测机的测量服务后，可以立即测量。")}
+            </p>
+          ))}
+          <TraceHops option={selected} />
         </>
       )}
     </div>
@@ -197,11 +213,11 @@ export function RouteTracePanel({ nodeId, urls, canConfigure }: {
     >
       {configured ? (
         <div id={resultsId} hidden={!open}>
-          {open && <RouteTraceResults nodeId={nodeId} urls={urls} />}
+          {open && <RouteTraceResults nodeId={nodeId} urls={urls} canMeasure={canConfigure} />}
         </div>
       ) : (
         <p className="text-[13px] text-(--text-secondary)">
-          {t("尚未配置路由快照。站长可在「主题设置 → 服务器 → 网络延迟」添加快照地址。")}
+          {t("尚未配置路由快照。站长可在「主题设置 → 服务器 → 网络延迟」添加快照或测量服务地址。")}
         </p>
       )}
     </InstancePanel>

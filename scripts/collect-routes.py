@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run configured NextTrace measurements and write one route snapshot."""
+"""Run configured NextTrace measurements once or serve them on demand."""
 
 import argparse
 from datetime import datetime, timezone
@@ -16,6 +16,7 @@ import tempfile
 MAX_HOPS = 30
 MAX_TARGETS = 32
 LABEL_LIMIT = 120
+PROBE_TOKEN_ENV = "ROUTE_TRACE_TOKEN"
 DATA_PROVIDERS = {"NextTrace-API", "IPInfoLocal", "ipdb.one", "disable-geoip"}
 
 
@@ -139,6 +140,7 @@ def measure(executable, provider, trace):
         run = subprocess.run(
             args, stdin=subprocess.DEVNULL, capture_output=True, text=True,
             encoding="utf-8", timeout=60, check=True,
+            env={key: value for key, value in os.environ.items() if key != PROBE_TOKEN_ENV},
         )
         result = json.loads(run.stdout)
         if not isinstance(result, dict) or not isinstance(result.get("Hops"), list):
@@ -183,6 +185,9 @@ def main():
     parser.add_argument("config", type=Path, help="JSON file with the local probe's fixed targets")
     parser.add_argument("output", type=Path, help="snapshot JSON to replace")
     parser.add_argument("--nexttrace", default="nexttrace", help="path or command name of NextTrace")
+    parser.add_argument("--serve", action="store_true", help="serve snapshots and on-demand traces on loopback")
+    parser.add_argument("--origin", help="CFSM theme site's origin for --serve")
+    parser.add_argument("--port", type=int, default=8765, help="loopback port for --serve")
     args = parser.parse_args()
 
     executable = shutil.which(args.nexttrace)
@@ -192,6 +197,17 @@ def main():
         parser.error("config and output must be different files")
     try:
         source, provider, targets = read_config(args.config)
+        if args.serve:
+            if not args.origin or not 1 <= args.port <= 65535:
+                parser.error("--serve requires --origin and a valid port")
+            from route_trace_server import serve_probe
+
+            serve_probe(
+                source, targets, args.output, args.origin, args.port,
+                os.environ.get(PROBE_TOKEN_ENV, ""),
+                lambda target: measure(executable, provider, target), write_snapshot,
+            )
+            return
         traces = [measure(executable, provider, trace) for trace in targets]
         write_snapshot(args.output, {"version": 1, "source": source, "traces": traces})
     except (OSError, ValueError) as error:

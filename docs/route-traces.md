@@ -1,6 +1,6 @@
 # 去程与回程路由
 
-服务器详情页可以读取 NextTrace 的测量结果。CF-Server-Monitor 继续负责节点和延迟数据，每台测量机用 `scripts/collect-routes.py` 生成自己的 JSON。把这些 JSON 放到浏览器可以读取的地址，再在主题设置中填入地址。
+服务器详情页可以读取 NextTrace 的测量结果。每台探测机可定时生成 JSON，也可以用测量服务接收网页请求并现场执行 NextTrace。两种方式都在主题设置里填数据源地址。
 
 | 方向 | 运行采集脚本的机器 | `targetIp` |
 | --- | --- | --- |
@@ -8,6 +8,38 @@
 | `return` 回程 | VPS | 所选国内测速节点的 IPv4 或 IPv6 地址 |
 
 想看自己宽带的实际去程，就在接入那条宽带的机器上测。不同城市或运营商的节点测出来的是各自到 VPS 的路径。两侧用同一对公网地址测量，才能直接比较这对端点的两个方向。每一跳的 RTT 是从发起端到该跳回复的往返时间。
+
+## 立即测量
+
+使用下文的 `forward.json` 和 `return.json`。把仓库里的 `scripts/collect-routes.py`、`scripts/route_trace_server.py` 一起放到各自的探测机。
+
+1. 在探测机上用 `python3 -c 'import secrets; print(secrets.token_urlsafe(32))'` 生成专用令牌。每台探测机可使用不同令牌。
+2. 启动本机测量服务。把 `https://status.example.com` 换成 CFSM 监控页的源地址，包含协议和非默认端口。下列命令用 Bash 在国内探测机上运行。VPS 用 `return.json` 和它自己的令牌。
+
+   ```bash
+   read -r -s -p '测量令牌: ' ROUTE_TRACE_TOKEN
+   export ROUTE_TRACE_TOKEN
+   python3 scripts/collect-routes.py forward.json ./latest.json \
+     --serve --origin https://status.example.com
+   ```
+
+3. 服务监听 `127.0.0.1:8765`。用现有的 HTTPS 反向代理提供 `snapshot.json`（读取线路和最近结果）及同目录下的 `measure`（发起测量）。以下示例放在探测机的 HTTPS Nginx 虚拟主机中。
+
+   ```nginx
+   location = /route-probe/snapshot.json {
+       proxy_pass http://127.0.0.1:8765/snapshot.json;
+   }
+   location = /route-probe/measure {
+       client_max_body_size 128;
+       proxy_read_timeout 75s;
+       proxy_pass http://127.0.0.1:8765/measure;
+   }
+   ```
+
+4. 把两台探测机的 `https://探测机域名/route-probe/snapshot.json` 各填一行到「主题设置 → 服务器 → 网络延迟 → 线路路由快照 URL」。跨域时，CFSM 的 CSP API 域名列表也要允许这两个 HTTPS 源。服务按 `--origin` 返回 CORS 响应。
+5. 登录监控页，在服务器详情页展开「线路路由」，选方向、IP 协议和测量线路，点「立即测量」。输入页面显示的那台探测机的专用令牌，再点「开始测量」。
+
+这个模式可以从空记录开始。命令结束时，页面直接更新结果，探测机也会保存最近记录。每台探测机同时执行一项测量，下一项在前一项结束十秒后可再次启动。快照地址可公开读取，请在配置中使用你打算公开的测量目标。令牌留在探测机上，网页仅在开始测量时向所选探测机发送你手动输入的令牌。定时采集和测量服务若同时使用，应分别使用各自的快照文件。
 
 ## 采集
 
@@ -80,7 +112,7 @@ python3 scripts/collect-routes.py return.json /var/www/routes/tokyo-vps.json
 1. 通过已有的 HTTPS 静态站提供这些 JSON，或把各台机器生成的文件同步到同一个静态目录。快照包含目标与各跳 IP，发布前确认这些信息可以公开。
 2. 若快照与主题站点跨域，静态站需要允许主题站点的 CORS 请求，例如响应 `Access-Control-Allow-Origin: https://status.example.com`。CFSM 后台启用了 CSP 时，在「外观设置」的 CSP API 域名列表中添加快照所在的 HTTPS 源，例如 `https://routes.example.com`。使用公开仓库的 `raw.githubusercontent.com` 文件也可以，CFSM 的默认 CSP 已允许该域名。
 3. 打开「主题设置 → 服务器 → 网络延迟 → 线路路由快照 URL」。每行填一个可直接访问的 JSON 地址，最多 12 个。已有同源静态服务时也可以填 `/routes/chengdu-mobile.json` 这样的绝对路径。URL 不接受重定向、账号密码或查询参数。
-4. 打开对应节点详情页，点「查看路由」，切换去程、回程、IPv4、IPv6 和测量线路。「刷新结果」重新读取快照，实际测量由探测机的定时任务执行。
+4. 打开对应节点详情页，点「查看路由」，切换去程、回程、IPv4、IPv6 和测量线路。「刷新结果」重新读取快照。需要按需测量时，接入上面的测量服务。
 
 从首页点击服务器名字进入详情页。「线路路由」在图表下方，未配置时会显示提示，登录站长可以点击「配置路由」直达主题设置的「服务器」页。
 

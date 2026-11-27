@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { normalizeThemeSettings } from "@/utils/themeSettings";
 import { parseRouteTraceUrls } from "@/utils/routeTraceUrls";
-import { fetchRouteTraceSnapshot, getNodeRouteTraces, RouteTraceSnapshotSchema } from "../routeTraces";
+import {
+  fetchRouteTraceSnapshot,
+  getNodeRouteOptions,
+  getNodeRouteTraces,
+  measureRouteTrace,
+  RouteTraceSnapshotSchema,
+} from "../routeTraces";
 
 const trace = {
   nodeId: "tokyo-vps",
@@ -58,5 +64,45 @@ describe("route trace snapshots", () => {
       credentials: "omit", redirect: "error", referrerPolicy: "no-referrer",
     }));
     await expect(fetchRouteTraceSnapshot(url)).rejects.toThrow("Invalid route family");
+  });
+
+  it("offers a configured probe for the current node before it has a measurement", () => {
+    const id = "a".repeat(32);
+    const snapshot = RouteTraceSnapshotSchema.parse({
+      version: 1,
+      source: "Chengdu Mobile",
+      traces: [],
+      probeTargets: [{ ...trace, id }],
+    });
+    const live = { snapshotUrl: "https://routes.example.com/probe/snapshot.json", snapshot };
+    expect(getNodeRouteOptions([live], "tokyo-vps")).toMatchObject([
+      { direction: "forward", family: 6, probe: { snapshotUrl: live.snapshotUrl, targetId: id } },
+    ]);
+    expect(getNodeRouteOptions([live], "another-node")).toEqual([]);
+    expect(getNodeRouteOptions([{ ...live, snapshotUrl: "https://routes.example.com/static.json" }], "tokyo-vps")).toEqual([]);
+  });
+
+  it("sends the preset ID and dedicated token only to the sibling measurement endpoint", async () => {
+    const id = "a".repeat(32);
+    const token = "test-token-".repeat(4);
+    const snapshot = {
+      version: 1,
+      source: "Chengdu Mobile",
+      traces: [trace],
+      probeTargets: [{ ...trace, id }],
+    };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(snapshot)));
+    vi.stubGlobal("fetch", fetchMock);
+    const probe = { snapshotUrl: "https://routes.example.com/probe/snapshot.json", targetId: id };
+    await expect(measureRouteTrace(probe, token)).resolves.toMatchObject({ traces: [trace] });
+    expect(fetchMock).toHaveBeenCalledWith(new URL("https://routes.example.com/probe/measure"), expect.objectContaining({
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ id }),
+      credentials: "omit",
+      redirect: "error",
+    }));
+    await expect(measureRouteTrace({ ...probe, snapshotUrl: "http://routes.example.com/snapshot.json" }, token)).rejects.toThrow();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
