@@ -3,6 +3,7 @@ import { useQueries } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { Route } from "lucide-react";
 import { InstancePanel, InstanceChartLoadingBody } from "@/components/instance/InstancePanel";
+import { OnlineForwardTrace } from "@/components/instance/OnlineForwardTrace";
 import { RangeSelector } from "@/components/instance/RangeSelector";
 import { RunRouteMeasurement } from "@/components/instance/RunRouteMeasurement";
 import { locale, t } from "@/i18n";
@@ -188,36 +189,54 @@ export function RouteTracePanel({ nodeId, urls, canConfigure }: {
   canConfigure: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const [onlineOpen, setOnlineOpen] = useState(false);
   const resultsId = useId();
+  const onlineId = useId();
   const configured = urls.length > 0;
   return (
     <InstancePanel
       title={t("线路路由")}
       titleIcon={<Route size={16} aria-hidden="true" />}
       description={configured ? t("查看国内测量节点与服务器之间的逐跳路径。") : undefined}
-      aside={configured ? (
-        <button
-          type="button"
-          className="instance-toggle-button"
-          aria-expanded={open}
-          aria-controls={resultsId}
-          onClick={() => setOpen(!open)}
-        >
-          {open ? t("收起路由") : t("查看路由")}
-        </button>
-      ) : canConfigure ? (
-        <Link to="/?view=theme-manage&tab=card" className="instance-toggle-button">
-          {t("配置路由")}
-        </Link>
-      ) : undefined}
+      aside={(
+        <div className="flex flex-wrap justify-end gap-1">
+          <button
+            type="button"
+            className="instance-toggle-button"
+            aria-expanded={onlineOpen}
+            aria-controls={onlineId}
+            onClick={() => setOnlineOpen(!onlineOpen)}
+          >
+            {t("在线测去程")}
+          </button>
+          {configured ? (
+            <button
+              type="button"
+              className="instance-toggle-button"
+              aria-expanded={open}
+              aria-controls={resultsId}
+              onClick={() => setOpen(!open)}
+            >
+              {open ? t("收起路由") : t("查看路由")}
+            </button>
+          ) : canConfigure ? (
+            <Link to="/?view=theme-manage&tab=card" className="instance-toggle-button">
+              {t("配置路由")}
+            </Link>
+          ) : null}
+        </div>
+      )}
     >
+      <div id={onlineId} hidden={!onlineOpen}>
+        {onlineOpen && <OnlineForwardTrace />}
+      </div>
       {configured ? (
         <div id={resultsId} hidden={!open}>
           {open && <RouteTraceResults nodeId={nodeId} urls={urls} canMeasure={canConfigure} />}
         </div>
       ) : (
         <p className="text-[13px] text-(--text-secondary)">
-          {t("尚未配置路由快照。站长可在「主题设置 → 服务器 → 网络延迟」添加快照或测量服务地址。")}
+          {t("尚未配置路由快照。可直接在线测去程，实际回程需接入 VPS 测量服务。")}
         </p>
       )}
     </InstancePanel>
