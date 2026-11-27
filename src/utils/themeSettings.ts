@@ -16,6 +16,7 @@ import {
   type CostPremiumEntry,
 } from "@/utils/cost";
 import { normalizeNodeIdentityList } from "@/utils/nodeIdentity";
+import { parseRouteTraceUrls } from "@/utils/routeTraceUrls";
 import {
   DEFAULT_RENEWAL_REMINDER_DAYS,
   MAX_RENEWAL_REMINDER_DAYS,
@@ -188,6 +189,7 @@ export interface ResolvedThemeSettings {
   matrixUserPresets: UserMatrixPreset[];
   enableAdminButton: boolean;
   showPingChart: boolean;
+  routeTraceUrls: string;
   homepagePingBindings: HomepagePingTaskBindings;
   homepageDefaultPingTaskId: number;
   enableHomepageMultiPing: boolean;
@@ -259,6 +261,7 @@ export const DEFAULT_THEME_SETTINGS: ResolvedThemeSettings = {
   matrixUserPresets: [],
   enableAdminButton: true,
   showPingChart: true,
+  routeTraceUrls: "",
   homepagePingBindings: {},
   homepageDefaultPingTaskId: DEFAULT_HOMEPAGE_PING_TASK_ID,
   enableHomepageMultiPing: true,
@@ -575,6 +578,7 @@ export function normalizeThemeSettings(
     matrixUserPresets: normalizeMatrixUserPresets(settings?.matrixUserPresets),
     enableAdminButton: enabledUnlessFalse(settings?.enableAdminButton),
     showPingChart: enabledUnlessFalse(settings?.showPingChart),
+    routeTraceUrls: parseRouteTraceUrls(settings?.routeTraceUrls)?.join("\n") ?? "",
     homepagePingBindings: normalizeHomepagePingTaskBindings(settings?.homepagePingBindings),
     homepageDefaultPingTaskId: resolveDefaultHomepagePingTaskId(
       settings?.homepageDefaultPingTaskId,

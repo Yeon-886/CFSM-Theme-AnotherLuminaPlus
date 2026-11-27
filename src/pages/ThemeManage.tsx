@@ -95,6 +95,7 @@ import {
   type CostPremiumEntry,
 } from "@/utils/cost";
 import { normalizeNodeIdentityList } from "@/utils/nodeIdentity";
+import { MAX_ROUTE_TRACE_URLS, parseRouteTraceUrls } from "@/utils/routeTraceUrls";
 import {
   DEFAULT_PING_LATENCY_COLORS,
   DEFAULT_PING_LATENCY_THRESHOLDS,
@@ -417,6 +418,7 @@ function pickManagedThemeSettings(settings: ResolvedThemeSettings) {
     matrixBootEffect: settings.matrixBootEffect,
     matrixCustomPattern: settings.matrixCustomPattern,
     matrixUserPresets: settings.matrixUserPresets,
+    routeTraceUrls: settings.routeTraceUrls,
     homepagePingBindings: settings.homepagePingBindings,
     homepageDefaultPingTaskId: settings.homepageDefaultPingTaskId,
     enableHomepageMultiPing: settings.enableHomepageMultiPing,
@@ -1510,6 +1512,8 @@ export function ThemeManage() {
   const draftMultiPingInvalid =
     draft.enableHomepageMultiPing &&
     !isHomepageMultiPingConfigured(draft.homepageMultiPingTaskIds);
+  const draftRouteTraceUrls = parseRouteTraceUrls(draft.routeTraceUrls);
+  const invalidSettings = draftCostRateApiUrlInvalid || draftMultiPingInvalid || draftRouteTraceUrls === null;
 
   const setRatingLabelDraft = useCallback((key: "bandwidth" | "asset", value: string) => {
     editVersionRef.current += 1;
@@ -1535,6 +1539,7 @@ export function ThemeManage() {
       costIgnoredNodes: normalizeCostIgnoredNodes(costIgnoredText),
       costPremiums: normalizeCostPremiums(rest.costPremiums),
       costRateApiUrl: normalizeCostRateApiUrl(rest.costRateApiUrl),
+      routeTraceUrls: parseRouteTraceUrls(rest.routeTraceUrls)?.join("\n") ?? "",
     };
   }, [draft]);
 
@@ -1544,7 +1549,7 @@ export function ThemeManage() {
   );
   const costRateApiUrlDirty =
     draft.costRateApiUrl.trim() !== sourceThemeSettings.costRateApiUrl;
-  const isDirty = draftSignature !== sourceSignature || costRateApiUrlDirty;
+  const isDirty = draftSignature !== sourceSignature || costRateApiUrlDirty || draftRouteTraceUrls === null;
 
   useEffect(() => {
     if (isDirty) setMessage(null);
@@ -1582,7 +1587,7 @@ export function ThemeManage() {
     autoSaveRef.current = null;
     if (!config || editVersionRef.current === 0) return;
     if (draftSignature === sourceSignature) return;
-    if (draftCostRateApiUrlInvalid || draftMultiPingInvalid) return;
+    if (invalidSettings) return;
     const save = () => {
       autoSaveRef.current = null;
       const changed = changedThemeSettings(draftThemeSettings, savedBaselineRef.current);
@@ -1596,10 +1601,9 @@ export function ThemeManage() {
     return () => window.clearTimeout(timer);
   }, [
     config,
-    draftCostRateApiUrlInvalid,
-    draftMultiPingInvalid,
     draftSignature,
     draftThemeSettings,
+    invalidSettings,
     sourceSignature,
   ]);
   useEffect(() => () => autoSaveRef.current?.(), []);
@@ -1729,6 +1733,7 @@ export function ThemeManage() {
               type="button"
               onClick={() => void handleCopySiteDefaults()}
               className="theme-manage-button"
+              disabled={draftRouteTraceUrls === null}
               title={t("复制当前设置的 JSON；粘贴到后台「外观设置 → 主题自定义配置」即可让所有设备用同一套配置")}
             >
               {copied ? <ClipboardCheck size={14} /> : <ClipboardCopy size={14} />}
@@ -1737,7 +1742,7 @@ export function ThemeManage() {
           )}
           <SiteSyncIndicator
             phase={siteSync.phase}
-            invalid={isDirty && (draftCostRateApiUrlInvalid || draftMultiPingInvalid)}
+            invalid={isDirty && invalidSettings}
             waiting={draftAwaitingAutoSave}
             toSite={canSaveToSite}
             savedLocally={savedLocally}
@@ -2612,6 +2617,23 @@ export function ThemeManage() {
                       </div>
                     </div>
                   )}
+                  <label className="surface-inset flex flex-col gap-2 px-4 py-3">
+                    <span className="setting-subhead-title">{t("线路路由快照 URL")}</span>
+                    <textarea
+                      rows={3}
+                      value={draft.routeTraceUrls}
+                      onChange={(event) => patch("routeTraceUrls", event.target.value)}
+                      aria-invalid={draftRouteTraceUrls === null}
+                      aria-describedby="route-trace-url-help"
+                      placeholder="https://routes.example.com/chengdu-mobile.json"
+                      className="surface-inset w-full resize-y p-2.5 font-mono text-[13px]"
+                    />
+                    <span id="route-trace-url-help" className="setting-hint">
+                      {draftRouteTraceUrls === null
+                        ? t("每行填一个 HTTPS 地址或站内绝对路径，最多 {n} 个，地址中不能带凭证或参数。", { n: MAX_ROUTE_TRACE_URLS })
+                        : t("每行填一个公开的快照地址，详情页会显示去程和回程。留空时关闭此功能。")}
+                    </span>
+                  </label>
                 </div>
               </InstancePanel>
             {/* 面板 5: 状态光柱 */}

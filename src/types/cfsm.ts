@@ -552,6 +552,8 @@ export interface ThemeSettings {
   mobileNodeViewMode?: "large" | "compact" | "mini" | "list";
   enableAdminButton?: boolean;
   showPingChart?: boolean;
+  /** 每行一个只读的线路路由快照 URL。 */
+  routeTraceUrls?: string;
   homepagePingBindings?: Record<string, string[]>;
   homepageDefaultPingTaskId?: number;
   enableHomepageMultiPing?: boolean;

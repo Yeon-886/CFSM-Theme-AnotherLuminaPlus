@@ -4,6 +4,7 @@
  *
  * WebSocket 不做模拟——连接失败后 store 会自动降级为轮询，正好覆盖降级路径。
  */
+import type { RouteTraceSnapshot } from "@/services/routeTraces";
 
 interface MockServer {
   id: string;
@@ -1126,7 +1127,40 @@ function buildHistory(serverId: string, hours: number) {
   return rows;
 }
 
-let mockThemeOptions: Record<string, unknown> = {};
+const MOCK_ROUTE_TRACES = new URLSearchParams(window.location.search).get("routes") === "1";
+const MOCK_ROUTE_URLS = ["/mock-routes/chengdu.json", "/mock-routes/tokyo.json"];
+let mockThemeOptions: Record<string, unknown> = MOCK_ROUTE_TRACES
+  ? { routeTraceUrls: MOCK_ROUTE_URLS.join("\n") }
+  : {};
+
+function mockRoutes(isForward: boolean): RouteTraceSnapshot {
+  const source = isForward ? "成都移动（模拟）" : "东京 VPS（模拟）";
+  return {
+    version: 1,
+    source,
+    traces: ([4, 6] as const).map((family) => {
+      const targetIp = isForward
+        ? family === 4 ? "203.0.113.10" : "2001:db8:1::10"
+        : family === 4 ? "198.51.100.20" : "2001:db8:2::20";
+      return {
+        nodeId: "tokyo-edge-01",
+        direction: isForward ? "forward" : "return",
+        family,
+        destination: isForward ? "东京 VPS（模拟）" : "成都移动（模拟）",
+        targetIp,
+        protocol: isForward ? "tcp" : "icmp",
+        ...(isForward && { port: 443 }),
+        measuredAt: new Date().toISOString(),
+        status: "reached",
+        hops: [
+          { ttl: 1, ip: family === 4 ? "192.0.2.1" : "2001:db8::1", rttMs: 1.2, asn: "AS64512", network: source },
+          { ttl: 2 },
+          { ttl: 3, ip: targetIp, rttMs: 84.6, location: isForward ? "日本 · 东京" : "中国 · 成都" },
+        ],
+      };
+    }),
+  };
+}
 
 /**
  * `?mock=1&turnstile=1`：模拟开了全局人机验证的站点。公钥用 Cloudflare 官方的测试公钥：`1` 总是通过，
@@ -1158,6 +1192,10 @@ export function installDevMockApi() {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
+
+    if (MOCK_ROUTE_TRACES && MOCK_ROUTE_URLS.includes(url.pathname)) {
+      return json(mockRoutes(url.pathname === MOCK_ROUTE_URLS[0]));
+    }
 
     // 本地验「什么时候发了哪些请求」：控制台读 window.__mockApiLog（形如 "403 /api/servers"）。
     const log = ((window as unknown as { __mockApiLog?: string[] }).__mockApiLog ??= []);

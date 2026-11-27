@@ -4,6 +4,7 @@ import "uplot/dist/uPlot.min.css";
 import { InstanceDetails } from "@/components/instance/InstanceDetails";
 import { PingChart } from "@/components/instance/PingChart";
 import { LoadChart } from "@/components/instance/LoadChart";
+import { RouteTracePanel } from "@/components/instance/RouteTracePanel";
 import { RangeSelector } from "@/components/instance/RangeSelector";
 import { PageBack } from "@/components/shell/PageBack";
 import { Spinner } from "@/components/ui/Spinner";
@@ -144,6 +145,9 @@ export function Instance() {
               />
             }
           />
+        )}
+        {themeSettings.isReady && themeSettings.routeTraceUrls && (
+          <RouteTracePanel key={uuid} nodeId={uuid} urls={themeSettings.routeTraceUrls.split("\n")} />
         )}
       </div>
     </div>
