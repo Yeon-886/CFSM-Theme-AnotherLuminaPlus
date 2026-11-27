@@ -2,18 +2,57 @@
 
 from hashlib import sha256
 import hmac
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from datetime import datetime, timezone
+import ipaddress
 import json
 import re
 import threading
+import tempfile
 import time
+from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 from urllib.parse import urlsplit
 
 TOKEN_FORMAT = re.compile(r"[A-Za-z0-9._~-]{32,128}")
 SNAPSHOT_PATH = "/snapshot.json"
 MEASURE_PATH = "/measure"
+SERVICE_SNAPSHOT_PATH = "/service-snapshot.json"
+SERVICE_CHECK_PATH = "/service-check"
 COOLDOWN_SECONDS = 10
 MAX_REQUEST_THREADS = 8
+
+SERVICE_CHECKS = {
+    "ai": [
+        ("OpenAI", "https://chatgpt.com/"),
+        ("Claude", "https://claude.ai/"),
+        ("Gemini", "https://gemini.google.com/"),
+    ],
+    "streaming": [
+        ("Netflix", "https://www.netflix.com/title/80057281"),
+        ("YouTube", "https://www.youtube.com/generate_204"),
+        ("Disney+", "https://www.disneyplus.com/"),
+    ],
+    "social": [
+        ("X", "https://x.com/"),
+        ("Facebook", "https://www.facebook.com/"),
+        ("Instagram", "https://www.instagram.com/"),
+        ("TikTok", "https://www.tiktok.com/"),
+    ],
+}
+SERVICE_CATEGORIES = tuple((*SERVICE_CHECKS, "ipReputation"))
+SERVICE_HTTP_TIMEOUT = 10
+
+
+class NoRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        return None
+
+
+NO_REDIRECT_OPENER = build_opener(NoRedirectHandler)
 
 
 def target_id(target):
@@ -82,6 +121,159 @@ class RouteProbe:
             self.lock.release()
 
 
+def _safe_text(value, limit=200):
+    return value.strip()[:limit] if isinstance(value, str) else ""
+
+
+def _classify_http_status(status):
+    if 200 <= status < 400:
+        return "reachable"
+    if status in (401, 403, 407, 451, 470, 472):
+        return "blocked"
+    return "error"
+
+
+def _check_service_url(name, url):
+    started = time.monotonic()
+    request = Request(url, headers={
+        "Accept": "text/html,application/xhtml+xml,application/json;q=0.8,*/*;q=0.1",
+        "User-Agent": "CFSM-Service-Check/1.0",
+    })
+    try:
+        with NO_REDIRECT_OPENER.open(request, timeout=SERVICE_HTTP_TIMEOUT) as response:
+            status = response.status
+        category = _classify_http_status(status)
+        detail = "收到正常网页响应" if category == "reachable" else f"HTTP {status}"
+        if 300 <= status < 400:
+            detail = "该站点要求继续跳转，未把它视为完全可用"
+        return {
+            "name": name, "url": url, "status": category, "httpStatus": status,
+            "latencyMs": round((time.monotonic() - started) * 1000), "detail": detail,
+        }
+    except HTTPError as error:
+        category = _classify_http_status(error.code)
+        return {
+            "name": name, "url": url, "status": category, "httpStatus": error.code,
+            "latencyMs": round((time.monotonic() - started) * 1000), "detail": f"HTTP {error.code}",
+        }
+    except (TimeoutError, URLError, OSError) as error:
+        reason = getattr(error, "reason", error)
+        timeout = isinstance(reason, TimeoutError) or "timed out" in str(reason).lower()
+        return {
+            "name": name, "url": url, "status": "timeout" if timeout else "error",
+            "latencyMs": round((time.monotonic() - started) * 1000),
+            "detail": "连接超时" if timeout else "无法建立连接",
+        }
+
+
+def _egress_ip():
+    request = Request("https://api.ipify.org?format=json", headers={"User-Agent": "CFSM-Service-Check/1.0"})
+    try:
+        with NO_REDIRECT_OPENER.open(request, timeout=SERVICE_HTTP_TIMEOUT) as response:
+            value = json.loads(response.read(4096)).get("ip")
+        return str(ipaddress.ip_address(value))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return ""
+
+
+def _ip_reputation(ip):
+    if not ip:
+        return {"status": "error", "detail": "无法识别探测机公网 IP"}
+    url = f"https://api.ipquery.io/{quote(ip, safe='')}"
+    request = Request(url, headers={"Accept": "application/json", "User-Agent": "CFSM-Service-Check/1.0"})
+    try:
+        with NO_REDIRECT_OPENER.open(request, timeout=SERVICE_HTTP_TIMEOUT) as response:
+            data = json.loads(response.read(32_768))
+        risk = data.get("risk") if isinstance(data, dict) else {}
+        location = data.get("location") if isinstance(data, dict) else {}
+        isp = data.get("isp") if isinstance(data, dict) else {}
+        return {
+            "status": "ok", "ip": ip,
+            "risk": {
+                "score": risk.get("risk_score") if isinstance(risk, dict) else None,
+                "vpn": risk.get("is_vpn") if isinstance(risk, dict) else None,
+                "proxy": risk.get("is_proxy") if isinstance(risk, dict) else None,
+                "tor": risk.get("is_tor") if isinstance(risk, dict) else None,
+                "datacenter": risk.get("is_datacenter") if isinstance(risk, dict) else None,
+                "abuser": risk.get("is_abuser") if isinstance(risk, dict) else None,
+            },
+            "location": {
+                "country": _safe_text(location.get("country")) if isinstance(location, dict) else "",
+                "city": _safe_text(location.get("city")) if isinstance(location, dict) else "",
+            },
+            "isp": _safe_text(isp.get("isp") if isinstance(isp, dict) else isp),
+        }
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+        return {"status": "error", "ip": ip, "detail": _safe_text(str(error)) or "IPQuery 查询失败"}
+
+
+class ServiceProbe:
+    def __init__(self, source, node_ids, output):
+        self.source = source
+        self.node_ids = sorted(set(node_ids))
+        self.output = output.with_name("service.json")
+        self.lock = threading.Lock()
+        self.next_allowed = 0
+        self.latest = self._load()
+
+    def _load(self):
+        try:
+            value = json.loads(self.output.read_text(encoding="utf-8"))
+            if isinstance(value, dict) and value.get("version") == 1 and value.get("source") == self.source:
+                return value
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            pass
+        return {"version": 1, "source": self.source, "nodeIds": self.node_ids, "categories": list(SERVICE_CATEGORIES), "results": {}}
+
+    def snapshot(self):
+        return {**self.latest, "nodeIds": self.node_ids, "categories": list(SERVICE_CATEGORIES)}
+
+    def run(self, category):
+        if category not in SERVICE_CATEGORIES and category != "all":
+            return 400, {"error": "unknown_service_category"}
+        if not self.lock.acquire(blocking=False):
+            return 409, {"error": "service_check_busy"}
+        try:
+            if time.monotonic() < self.next_allowed:
+                return 429, {"error": "service_check_cooldown"}
+            egress = _egress_ip()
+            now = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+            categories = list(SERVICE_CHECKS) if category == "all" else [category]
+            results = dict(self.latest.get("results") or {})
+            for current in categories:
+                if current == "ipReputation":
+                    results[current] = {"checkedAt": now, "egressIp": egress, "reputation": _ip_reputation(egress)}
+                else:
+                    results[current] = {
+                        "checkedAt": now, "egressIp": egress,
+                        "results": [_check_service_url(name, url) for name, url in SERVICE_CHECKS[current]],
+                    }
+            self.next_allowed = time.monotonic() + COOLDOWN_SECONDS
+            snapshot = {"version": 1, "source": self.source, "nodeIds": self.node_ids, "categories": list(SERVICE_CATEGORIES), "results": results}
+            try:
+                write_json_atomic(self.output, snapshot)
+            except OSError:
+                return 503, {"error": "service_snapshot_write_failed"}
+            self.latest = snapshot
+            return 200, snapshot
+        finally:
+            self.lock.release()
+
+
+def write_json_atomic(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as file:
+        temp = Path(file.name)
+        try:
+            json.dump(value, file, ensure_ascii=False, separators=(",", ":"))
+            file.write("\n")
+            file.close()
+            temp.chmod(0o644)
+            os.replace(temp, path)
+        finally:
+            temp.unlink(missing_ok=True)
+
+
 class ProbeHandler(BaseHTTPRequestHandler):
     timeout = 5
 
@@ -109,7 +301,12 @@ class ProbeHandler(BaseHTTPRequestHandler):
         return origin is None or origin == self.server.web_origin
 
     def do_GET(self):
-        if self.path != SNAPSHOT_PATH:
+        if self.path == SERVICE_SNAPSHOT_PATH:
+            if not self.allowed_origin():
+                self.send_json(403, {"error": "origin_not_allowed"})
+            else:
+                self.send_json(200, self.server.services.snapshot())
+        elif self.path != SNAPSHOT_PATH:
             self.send_json(404, {"error": "not_found"})
         elif not self.allowed_origin():
             self.send_json(403, {"error": "origin_not_allowed"})
@@ -117,7 +314,7 @@ class ProbeHandler(BaseHTTPRequestHandler):
             self.send_json(200, self.server.probe.snapshot())
 
     def do_OPTIONS(self):
-        if self.path not in (SNAPSHOT_PATH, MEASURE_PATH):
+        if self.path not in (SNAPSHOT_PATH, MEASURE_PATH, SERVICE_SNAPSHOT_PATH, SERVICE_CHECK_PATH):
             self.send_json(404, {"error": "not_found"})
         elif not self.allowed_origin():
             self.send_json(403, {"error": "origin_not_allowed"})
@@ -125,7 +322,7 @@ class ProbeHandler(BaseHTTPRequestHandler):
             self.send_json(204)
 
     def do_POST(self):
-        if self.path != MEASURE_PATH:
+        if self.path not in (MEASURE_PATH, SERVICE_CHECK_PATH):
             self.send_json(404, {"error": "not_found"})
             return
         if not self.allowed_origin():
@@ -155,10 +352,16 @@ class ProbeHandler(BaseHTTPRequestHandler):
         except (OSError, ValueError):
             self.send_json(400, {"error": "invalid_json"})
             return
-        if not isinstance(request, dict) or set(request) != {"id"} or not isinstance(request["id"], str):
-            self.send_json(400, {"error": "expected_target_id"})
-            return
-        status, data = self.server.probe.run(request["id"])
+        if self.path == SERVICE_CHECK_PATH:
+            if not isinstance(request, dict) or set(request) != {"category"} or not isinstance(request["category"], str):
+                self.send_json(400, {"error": "expected_service_category"})
+                return
+            status, data = self.server.services.run(request["category"])
+        else:
+            if not isinstance(request, dict) or set(request) != {"id"} or not isinstance(request["id"], str):
+                self.send_json(400, {"error": "expected_target_id"})
+                return
+            status, data = self.server.probe.run(request["id"])
         self.send_json(status, data)
 
 
@@ -210,9 +413,11 @@ def serve_probe(source, targets, output, origin, port, token, measure, save):
         raise ValueError("Set ROUTE_TRACE_TOKEN to a dedicated 32–128 character token")
     origin = parse_origin(origin)
     probe = RouteProbe(source, targets, output, measure, save)
+    services = ServiceProbe(source, [target["nodeId"] for target in targets], output)
     with ProbeHTTPServer(("127.0.0.1", port), ProbeHandler) as server:
         server.web_origin = origin
         server.probe = probe
+        server.services = services
         server.token = token
         print(f"Route probe listening on http://127.0.0.1:{server.server_port}", flush=True)
         try:

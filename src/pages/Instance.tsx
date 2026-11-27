@@ -5,6 +5,7 @@ import { InstanceDetails } from "@/components/instance/InstanceDetails";
 import { PingChart } from "@/components/instance/PingChart";
 import { LoadChart } from "@/components/instance/LoadChart";
 import { RouteTracePanel } from "@/components/instance/RouteTracePanel";
+import { ServiceCheckPanel } from "@/components/instance/ServiceCheckPanel";
 import { RangeSelector } from "@/components/instance/RangeSelector";
 import { PageBack } from "@/components/shell/PageBack";
 import { Spinner } from "@/components/ui/Spinner";
@@ -152,6 +153,13 @@ export function Instance() {
             nodeId={uuid}
             urls={themeSettings.routeTraceUrls ? themeSettings.routeTraceUrls.split("\n") : []}
             canConfigure={me?.logged_in === true}
+          />
+        )}
+        {themeSettings.isReady && (
+          <ServiceCheckPanel
+            nodeId={uuid}
+            urls={themeSettings.routeTraceUrls ? themeSettings.routeTraceUrls.split("\n") : []}
+            canMeasure={me?.logged_in === true}
           />
         )}
       </div>
