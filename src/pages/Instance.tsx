@@ -146,8 +146,13 @@ export function Instance() {
             }
           />
         )}
-        {themeSettings.isReady && themeSettings.routeTraceUrls && (
-          <RouteTracePanel key={uuid} nodeId={uuid} urls={themeSettings.routeTraceUrls.split("\n")} />
+        {themeSettings.isReady && (
+          <RouteTracePanel
+            key={uuid}
+            nodeId={uuid}
+            urls={themeSettings.routeTraceUrls ? themeSettings.routeTraceUrls.split("\n") : []}
+            canConfigure={me?.logged_in === true}
+          />
         )}
       </div>
     </div>

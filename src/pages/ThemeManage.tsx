@@ -2631,7 +2631,7 @@ export function ThemeManage() {
                     <span id="route-trace-url-help" className="setting-hint">
                       {draftRouteTraceUrls === null
                         ? t("每行填一个 HTTPS 地址或站内绝对路径，最多 {n} 个，地址中不能带凭证或参数。", { n: MAX_ROUTE_TRACE_URLS })
-                        : t("每行填一个公开的快照地址，详情页会显示去程和回程。留空时关闭此功能。")}
+                        : t("每行填一个公开的快照地址，详情页会显示去程和回程。")}
                     </span>
                   </label>
                 </div>

@@ -1,5 +1,6 @@
 import { useId, useState } from "react";
 import { useQueries } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import { Route } from "lucide-react";
 import { InstancePanel, InstanceChartLoadingBody } from "@/components/instance/InstancePanel";
 import { RangeSelector } from "@/components/instance/RangeSelector";
@@ -165,15 +166,20 @@ function RouteTraceResults({ nodeId, urls }: { nodeId: string; urls: string[] })
   );
 }
 
-export function RouteTracePanel({ nodeId, urls }: { nodeId: string; urls: string[] }) {
+export function RouteTracePanel({ nodeId, urls, canConfigure }: {
+  nodeId: string;
+  urls: string[];
+  canConfigure: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const resultsId = useId();
+  const configured = urls.length > 0;
   return (
     <InstancePanel
       title={t("线路路由")}
       titleIcon={<Route size={16} aria-hidden="true" />}
-      description={t("查看国内测量节点与服务器之间的逐跳路径。")}
-      aside={(
+      description={configured ? t("查看国内测量节点与服务器之间的逐跳路径。") : undefined}
+      aside={configured ? (
         <button
           type="button"
           className="instance-toggle-button"
@@ -183,11 +189,21 @@ export function RouteTracePanel({ nodeId, urls }: { nodeId: string; urls: string
         >
           {open ? t("收起路由") : t("查看路由")}
         </button>
-      )}
+      ) : canConfigure ? (
+        <Link to="/?view=theme-manage&tab=card" className="instance-toggle-button">
+          {t("配置路由")}
+        </Link>
+      ) : undefined}
     >
-      <div id={resultsId} hidden={!open}>
-        {open && <RouteTraceResults nodeId={nodeId} urls={urls} />}
-      </div>
+      {configured ? (
+        <div id={resultsId} hidden={!open}>
+          {open && <RouteTraceResults nodeId={nodeId} urls={urls} />}
+        </div>
+      ) : (
+        <p className="text-[13px] text-(--text-secondary)">
+          {t("尚未配置路由快照。站长可在「主题设置 → 服务器 → 网络延迟」添加快照地址。")}
+        </p>
+      )}
     </InstancePanel>
   );
 }
